@@ -1,17 +1,9 @@
 # zkstat.py
 
-Small CLI to inspect **Circom/SnarkJS artifacts**: `.wtns` (witness) and `.zkey` (proving key).  
+Small CLI to inspect **Circom/SnarkJS artifacts**: `.zkey` (proving key).  
 Focus: **zero-bit/byte histograms** and **zero-point counts**, streamed (memory-light).
 
 ---
-
-## What it computes
-
-### WTNS (`*.wtns`)
-- Reads header (`FS` in bytes, `witness_len`).
-- Streams witness values (section #2) and outputs:
-    - **Per-bit zero counts**: length `FS*8` (bit index = `byte*8 + bit`).
-    - **Per-byte zero counts**: length `FS`.
 
 ### ZKEY (`*.zkey`)
 - Parses container sections `(id, length, offset)` with common labels:
@@ -28,9 +20,6 @@ Everything is streamed via `mmap`; no full-file loads.
 ## Commands
 
 ```bash
-# Witness: bit/byte zero histograms
-python3 zkstat.py wtns-stats circuit.wtns --out out/wtns --plot
-
 # ZKey: section sizes + zero-point counts (and sort by zeroes)
 python3 zkstat.py zkey-stats circuit_final.zkey --fs-bytes 32 --out out/zkey --sort
 
@@ -57,12 +46,6 @@ Flags:
 ---
 
 ## Outputs (by command)
-
-### `wtns-stats`
-- `wtns_summary.json` — FS, witness_len, sections, totals.
-- `wtns_zero_bits.csv` — `bit_index, zero_count, zero_ratio`.
-- `wtns_zero_bytes.csv` — `byte_index, zero_count, zero_ratio`.
-- `wtns_zero_bits_hist.png` (with `--plot`).
 
 ### `zkey-stats`
 - `zkey_summary.json` — sections + zero-point stats.
