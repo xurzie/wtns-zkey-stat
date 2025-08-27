@@ -84,4 +84,79 @@ Flags:
 - “Zero point” = **all‑zero bytes** (common for uncompressed ∞ in snarkjs/rapidsnark). If your encoding differs, adjust the rule.
 - Labels are conventional; exact semantics can vary. For precise vector sizes, mirror rapidsnark’s header parsing.
 
+---
+
+## Testing
+
+```bash
+python3 - <<'PY'
+import json, mmap
+z = "aadhaar-verifier_58662f0cdc3f108b430bab374605b6f3_final.zkey"
+meta = json.load(open("out/zkey/zkey_summary.json"))
+# section 7 = large G2, first 5 zero indices selected
+sec_id = 7
+fs = meta["field_size_bytes_used"]; G2 = fs*4
+off = next(s["offset"] for s in meta["sections"] if s["id"]==sec_id)
+g2cand = next(r for r in meta["zero_points_by_section"] if r["section_id"]==sec_id)["g2_candidates"]
+
+with open(z, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+    found = 0
+    for i in range(g2cand):
+        blk = mm[off+i*G2 : off+(i+1)*G2]
+        if blk.count(0) == G2:
+            print("zero@i=", i)
+            found += 1
+            if found >= 5: break
+PY
+```
+It will print several __i__ indices where the block is zero. Check the specific block in hexdump:
+
+```bash
+# substitute your offset (off), size (128) and i from the output above:
+OFF=<offset_sec7>            # from zkey_summary.json for section_id=7
+I=<index_from_script>
+Z="aadhaar-verifier_58662f0cdc3f108b430bab374605b6f3_final.zkey"
+
+# look at 128 bytes of this block - they should all be 00
+dd if="$Z" bs=1 skip=$((OFF + I*128)) count=128 2>/dev/null | hexdump -C
+```
+
+One python shot, hexdump block __i=4__ section __7__
+
+```bash
+python3 - <<'PY'
+import json, mmap
+
+def hexdump(b, base=0):
+    """Print b bytes as hexdump; base is the base offset."""
+    for i in range(0, len(b), 16):
+        chunk = b[i:i+16]
+        print(
+            f"{base+i:08x}: "
+            + ' '.join(f"{x:02x}" for x in chunk).ljust(47)
+            + "  |"
+            + ''.join(chr(x) if 32 <= x < 127 else '.' for x in chunk)
+            + "|"
+        )
+
+# --- params you may tweak ---
+ZKEY = "aadhaar-verifier_58662f0cdc3f108b430bab374605b6f3_final.zkey"
+SECTION_ID = 7   # VK_DELTA2 (G2) in this cace
+BLOCK_INDEX = 4  # which block to check
+# ----------------------------
+
+meta = json.load(open("out/zkey/zkey_summary.json"))
+sec  = next(s for s in meta["sections"] if s["id"] == SECTION_ID)
+fs   = meta["field_size_bytes_used"]
+BLK  = fs * 4  # G2 = 4*FS; для G1 было бы fs*2
+
+off = sec["offset"] + BLOCK_INDEX * BLK
+
+with open(ZKEY, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+    b = mm[off : off + BLK]  # one G2 block by index
+    print("all-zero?", b.count(0) == BLK, "offset=", off)
+    hexdump(b, base=off)
+PY
+```
+
 MIT License.

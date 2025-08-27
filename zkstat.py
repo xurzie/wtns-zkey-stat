@@ -4,10 +4,6 @@ from __future__ import annotations
 import argparse, csv, io, os, struct, mmap, json, math, pathlib, sys, tarfile
 from typing import Dict, Any, List, Tuple, Optional
 
-# ----------------------------
-# helpers
-# ----------------------------
-
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
@@ -47,101 +43,6 @@ def hexdump(b: bytes, base_off: int = 0) -> str:
         asci = ''.join(chr(x) if 32 <= x < 127 else '.' for x in chunk)
         out_lines.append(f"{base_off+i:08x}: {hexs:<47}  |{asci}|")
     return '\n'.join(out_lines)
-
-# ----------------------------
-# W T N S
-# ----------------------------
-
-class WtnsStats:
-    def __init__(self, fs_bytes: int, n_witness: int, n_sections: int, sections: List[Dict[str, Any]]):
-        self.fs_bytes = fs_bytes
-        self.n_witness = n_witness
-        self.n_sections = n_sections
-        self.sections = sections
-        self.zero_bits_per_position: List[int] = [0] * (fs_bytes * 8)
-        self.zero_bytes_per_position: List[int] = [0] * fs_bytes
-        self.total_scalars: int = 0
-
-    def to_json(self) -> Dict[str, Any]:
-        return {
-            "format": "wtns",
-            "field_size_bytes": self.fs_bytes,
-            "witness_len": self.n_witness,
-            "n_sections": self.n_sections,
-            "sections": self.sections,
-            "total_scalars": self.total_scalars,
-            "zero_bit_counts": self.zero_bits_per_position,
-            "zero_bit_ratio": [zb / max(1, self.total_scalars) for zb in self.zero_bits_per_position],
-            "zero_byte_counts": self.zero_bytes_per_position,
-            "zero_byte_ratio": [zb / max(1, self.total_scalars) for zb in self.zero_bytes_per_position],
-        }
-
-def parse_wtns_header(mm: mmap.mmap) -> WtnsStats:
-    if mm.read(4) != b"wtns":
-        raise ValueError("Not a .wtns file (magic mismatch)")
-    version = struct.unpack('<I', mm.read(4))[0]
-    n_sections = struct.unpack('<I', mm.read(4))[0]
-
-    sections_meta: List[Dict[str, Any]] = []
-    fs_bytes = None
-    n_witness = None
-
-    for _ in range(n_sections):
-        sec_id = struct.unpack('<I', mm.read(4))[0]
-        sec_len = struct.unpack('<Q', mm.read(8))[0]
-        start = mm.tell()
-        if sec_id == 1:
-            fs_bytes = struct.unpack('<I', mm.read(4))[0]
-            _prime = mm.read(fs_bytes)
-            n_witness = struct.unpack('<I', mm.read(4))[0]
-        else:
-            mm.seek(start + sec_len)
-        sections_meta.append({"id": int(sec_id), "length": int(sec_len), "offset": int(start)})
-
-    if fs_bytes is None or n_witness is None:
-        raise ValueError("Malformed .wtns: missing section #1 (field size / witness len)")
-    return WtnsStats(fs_bytes, n_witness, n_sections, sections_meta)
-
-def stream_witness_and_count_zeros(mm: mmap.mmap, stats: WtnsStats):
-    mm.seek(0)
-    mm.read(4)
-    _version = struct.unpack('<I', mm.read(4))[0]
-    n_sections = struct.unpack('<I', mm.read(4))[0]
-
-    sec2_off = sec2_len = None
-    for _ in range(n_sections):
-        sec_id = struct.unpack('<I', mm.read(4))[0]
-        sec_len = struct.unpack('<Q', mm.read(8))[0]
-        start = mm.tell()
-        if sec_id == 2:
-            sec2_off, sec2_len = start, sec_len
-            break
-        mm.seek(start + sec_len)
-    if sec2_off is None:
-        raise ValueError("Malformed .wtns: missing section #2 (witness data)")
-
-    fs = stats.fs_bytes
-    total = stats.n_witness
-    mm.seek(sec2_off)
-
-    bit_positions = stats.zero_bits_per_position
-    byte_positions = stats.zero_bytes_per_position
-
-    for i in range(total):
-        chunk = mm.read(fs)
-        if len(chunk) != fs:
-            raise ValueError(f"Unexpected EOF at witness element {i}")
-        for bi, byte in enumerate(chunk):
-            if byte == 0:
-                byte_positions[bi] += 1
-            for bit in range(8):
-                if (byte >> bit) & 1 == 0:
-                    bit_positions[bi*8 + bit] += 1
-    stats.total_scalars = total
-
-# ----------------------------
-# Z K E Y
-# ----------------------------
 
 class ZkeyStats:
     def __init__(self, version: int, n_sections: int, sections: List[Dict[str, Any]], fs_bytes_guess: int):
@@ -225,7 +126,6 @@ def dump_zero_indices(mm: mmap.mmap, section_meta: Dict[str, Any], fs_bytes: int
                 break
     return out, blk
 
-
 def iter_blocks(mm: mmap.mmap, off: int, length: int, blk: int):
     """
     Sequentially yield (i, bytes) for blocks of size `blk` inside [off, off+length).
@@ -267,23 +167,6 @@ def plot_zero_byte_histogram(outdir: str, sec_id: int, space: str, counts: list)
     out = os.path.join(outdir, f"zkey_sec{sec_id}_{space}_zero_bytes_hist.png")
     plt.savefig(out, dpi=160, bbox_inches="tight"); plt.close()
 
-# ----------------------------
-# Plots (optional)
-# ----------------------------
-
-def plot_wtns_bit_histogram(outdir: str, bit_counts: List[int], total_scalars: int, fs_bytes: int):
-    try:
-        import matplotlib.pyplot as plt
-    except Exception as e:
-        print(f"[warn] matplotlib not available, skip plotting: {e}", file=sys.stderr)
-        return
-    xs = list(range(len(bit_counts))); ys = [c for c in bit_counts]
-    plt.figure(); plt.bar(xs, ys)
-    plt.title(f"WTNS zero-bit counts (total={total_scalars}, FS={fs_bytes}B)")
-    plt.xlabel("Bit index (byte*8 + bit)"); plt.ylabel("Zero count")
-    out = os.path.join(outdir, "wtns_zero_bits_hist.png")
-    plt.savefig(out, dpi=160, bbox_inches="tight"); plt.close()
-
 def plot_zkey_zero_points(outdir: str, rows: List[Dict[str, Any]]):
     try:
         import matplotlib.pyplot as plt
@@ -296,10 +179,6 @@ def plot_zkey_zero_points(outdir: str, rows: List[Dict[str, Any]]):
     out = os.path.join(outdir, "zkey_zero_points_hist.png")
     plt.savefig(out, dpi=160, bbox_inches="tight"); plt.close()
 
-# ----------------------------
-# scan-tgz
-# ----------------------------
-
 def cmd_scan_tgz(args):
     tgz = pathlib.Path(args.file).expanduser().resolve()
     outdir = pathlib.Path(args.out).resolve() if args.out else pathlib.Path.cwd() / "out"
@@ -307,43 +186,17 @@ def cmd_scan_tgz(args):
 
     with tarfile.open(tgz, "r:gz") as tf:
         members = tf.getmembers()
-        wtns_members = [m for m in members if m.isfile() and m.name.lower().endswith(".wtns")]
         zkey_members = [m for m in members if m.isfile() and m.name.lower().endswith(".zkey")]
 
         results = {}
         extracted_paths: List[str] = []
 
-        for m in wtns_members + zkey_members:
+        for m in zkey_members:
             target = outdir / os.path.basename(m.name)
             with tf.extractfile(m) as rf, open(target, "wb") as wf:
                 wf.write(rf.read())
             extracted_paths.append(str(target))
 
-        # try infer FS from any wtns
-        fs_guess = None
-        for p in extracted_paths:
-            if p.endswith(".wtns"):
-                with open(p, 'rb') as fh, mmap.mmap(fh.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
-                    st = parse_wtns_header(mm)
-                    fs_guess = st.fs_bytes
-                    break
-
-        # process wtns
-        for p in extracted_paths:
-            if p.endswith(".wtns"):
-                with open(p, 'rb') as fh, mmap.mmap(fh.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
-                    st = parse_wtns_header(mm)
-                    stream_witness_and_count_zeros(mm, st)
-                summary = st.to_json()
-                results[os.path.basename(p)] = summary
-                sub = outdir / (os.path.basename(p) + ".out"); sub.mkdir(exist_ok=True)
-                write_json(str(sub / "wtns_summary.json"), summary)
-                rows = [[i, c, c / max(1, st.total_scalars)] for i, c in enumerate(st.zero_bits_per_position)]
-                write_csv(str(sub / "wtns_zero_bits.csv"), ["bit_index", "zero_count", "zero_ratio"], rows)
-                rows = [[i, c, c / max(1, st.total_scalars)] for i, c in enumerate(st.zero_bytes_per_position)]
-                write_csv(str(sub / "wtns_zero_bytes.csv"), ["byte_index", "zero_count", "zero_ratio"], rows)
-
-        # process zkey
         for p in extracted_paths:
             if p.endswith(".zkey"):
                 with open(p, 'rb') as fh, mmap.mmap(fh.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
@@ -367,10 +220,6 @@ def cmd_scan_tgz(args):
 
         write_json(str(outdir / "scan_summary.json"), results)
         print(json.dumps({"out": str(outdir), "files": list(results.keys())}, indent=2))
-
-# ----------------------------
-# zkey-stats (with optional dumps)
-# ----------------------------
 
 def cmd_zkey_stats(args):
     p = pathlib.Path(args.file).expanduser().resolve()
@@ -455,43 +304,12 @@ def cmd_zkey_stats(args):
             plot_zkey_zero_points(str(outdir), zstats.zero_points_by_section)
 
 # ----------------------------
-# wtns-stats
-# ----------------------------
-
-def cmd_wtns_stats(args):
-    p = pathlib.Path(args.file).expanduser().resolve()
-    outdir = pathlib.Path(args.out).resolve() if args.out else None
-    if outdir: outdir.mkdir(parents=True, exist_ok=True)
-
-    with open(p, 'rb') as fh, mmap.mmap(fh.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
-        stats = parse_wtns_header(mm)
-        stream_witness_and_count_zeros(mm, stats)
-
-    summary = stats.to_json()
-    print(json.dumps(summary, indent=2))
-
-    if outdir:
-        write_json(str(outdir / "wtns_summary.json"), summary)
-        rows = [[i, c, c / max(1, stats.total_scalars)] for i, c in enumerate(stats.zero_bits_per_position)]
-        write_csv(str(outdir / "wtns_zero_bits.csv"), ["bit_index", "zero_count", "zero_ratio"], rows)
-        rows = [[i, c, c / max(1, stats.total_scalars)] for i, c in enumerate(stats.zero_bytes_per_position)]
-        write_csv(str(outdir / "wtns_zero_bytes.csv"), ["byte_index", "zero_count", "zero_ratio"], rows)
-        if args.plot:
-            plot_wtns_bit_histogram(str(outdir), stats.zero_bits_per_position, stats.total_scalars, stats.fs_bytes)
-
-# ----------------------------
 # CLI
 # ----------------------------
 
 def main():
     ap = argparse.ArgumentParser(description="Quick stats for .wtns and .zkey files")
     sub = ap.add_subparsers(dest="cmd", required=True)
-
-    ap_w = sub.add_parser("wtns-stats", help="Parse witness and compute zero-bit/byte histograms")
-    ap_w.add_argument("file", help="Path to .wtns file")
-    ap_w.add_argument("--out", help="Directory to write CSV/JSON/plots")
-    ap_w.add_argument("--plot", action="store_true", help="Also emit PNG histograms (requires matplotlib)")
-    ap_w.set_defaults(func=cmd_wtns_stats)
 
     ap_z = sub.add_parser("zkey-stats", help="Parse zkey sections and count zero points per section (heuristic)")
     ap_z.add_argument("file", help="Path to .zkey file")
@@ -506,7 +324,7 @@ def main():
     ap_z.add_argument("--hexdump", action="store_true", help="Write hexdump samples of dumped blocks into --out dir")
     ap_z.set_defaults(func=cmd_zkey_stats)
 
-    ap_s = sub.add_parser("scan-tgz", help="Scan a .tgz/.tar.gz with .wtns/.zkey files and emit stats for each")
+    ap_s = sub.add_parser("scan-tgz", help="Scan a .tgz/.tar.gz with .zkey files and emit stats for each")
     ap_s.add_argument("file", help="Path to .tgz or .tar.gz")
     ap_s.add_argument("--out", help="Directory to place extracted files and stats (default ./out)")
     ap_s.set_defaults(func=cmd_scan_tgz)
